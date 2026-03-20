@@ -1,0 +1,20 @@
+
+# Pinned dependencies for reproducible installs.
+#
+# IMPORTANT (GPU): Use Python 3.10 or 3.11 for the most reliable PyTorch GPU wheel support.
+# If you use Python 3.12/3.13, GPU wheels may be unavailable depending on the PyTorch release.
+#
+# CUDA wheel selection:
+# - cu121 = CUDA 12.1 wheels (requires compatible NVIDIA driver)
+# - If you need a different CUDA version, change the URL to e.g. cu118 and the torch suffix.
+#
+# Docs: https://pytorch.org/get-started/locally/
+
+--index-url https://download.pytorch.org/whl/cu121
+--extra-index-url https://pypi.org/simple
+
+torch==2.2.2+cu121
+numpy==1.26.4
+pygame==2.5.2
+matplotlib==3.8.4
+
