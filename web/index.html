@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Game Meekijken</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <h1 id="title">Game Meekijken</h1>
+      <div class="stats">
+        <span id="metricLabel">Score: <strong id="score">0</strong></span>
+        <span>Best: <strong id="highscore">0</strong></span>
+      </div>
+    </header>
+
+    <section class="panel">
+      <canvas id="game" width="64" height="64" aria-label="Game canvas"></canvas>
+
+      <div class="controls">
+        <label for="gameSelect">Game</label>
+        <select id="gameSelect">
+          <option value="snake">Snake</option>
+          <option value="flappy">Flappy Bird</option>
+        </select>
+        <button id="toggle" type="button">Pauze</button>
+        <button id="reset" type="button">Reset</button>
+        <label for="speed">Snelheid</label>
+        <input id="speed" type="range" min="10" max="60" value="30" />
+      </div>
+
+      <p class="hint" id="hint">Live game viewer. Geen fallback: de pagina toont alleen echte feed-data.</p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

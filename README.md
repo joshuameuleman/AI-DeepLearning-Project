@@ -1,6 +1,6 @@
 # Snake AI with Deep Q-Learning (PyTorch)
 
-An AI agent that learns to play the classic Snake game using **Deep Q-Networks (DQN)** built with **PyTorch**. The goal is to train a model that can survive longer and collect more food over time.
+An AI project that uses **Reinforcement Learning** and **Deep Learning** with **Deep Q-Networks (DQN)**. The current setup is organized so Snake, Flappy Bird, and 2048 can each run through the same RL pipeline.
 
 
 
@@ -142,9 +142,19 @@ python -c "import torch; print('torch:', torch.__version__)"
 ## How to Run
 Because project structures differ, use the commands that match your entry scripts:
 
+- Interactive launcher from the project root:
+```bash
+python main.py
+```
+
+- Visualize a game directly:
+```bash
+python DQN/visualize.py --game snake
+```
+
 - Train the agent (common script name: `train.py`):
 ```bash
-python train.py
+python DQN/train.py --game snake --episodes 1
 ```
 
 - Play/watch the trained agent (common script name: `play.py` or `agent_play.py`):
@@ -164,6 +174,20 @@ Typical configs you might expose in code:
 - batch size
 - replay memory size
 - epsilon start/end/decay
+
+## RL Structure
+The DQN code is split into clear RL parts:
+
+- `DQN/src/envs/`: environment wrappers for each game
+- `DQN/src/agents/`: agent logic and replay memory
+- `DQN/src/models/`: Q-network and checkpoint helpers
+- `DQN/src/training/`: config and training loop
+- `DQN/src/visualization/`: text-based visualization runner
+
+Generated outputs:
+
+- `DQN/checkpoints/<game>/latest.pth`
+- `DQN/logs/<game>/metrics.csv`
 
 ---
 
@@ -219,4 +243,4 @@ Common supporting libraries (depending on your implementation):
 ---
 
 ## Conclusion
-This project demonstrates how Reinforcement Learning can train an agent through trial and error. By using a DQN in PyTorch, the Snake agent learns to connect actions to long-term rewards, improving its score and survival over time.
+This project demonstrates how Reinforcement Learning can train an agent through trial and error. By using a DQN in PyTorch, the agents learn from rewards, replay memory, and neural-network updates over time.

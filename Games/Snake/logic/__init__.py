@@ -1,0 +1,1 @@
+"""Snake game logic package."""

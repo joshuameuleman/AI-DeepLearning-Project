@@ -1,0 +1,15 @@
+timestamp_utc,game,checkpoint,eval_episodes,avg_reward,avg_steps,avg_score,board_filled_pct,self_collision_pct,wall_collision_pct,stagnation_timeout_pct,pipe_collision_pct,ground_collision_pct,ceiling_collision_pct
+2026-04-07T08:13:55+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,2989.1524,4458.48,1276.00,0.00,84.00,16.00,0.00,0.00,0.00,0.00
+2026-04-08T19:11:58+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,3288.3020,4843.56,1402.00,0.00,84.00,16.00,0.00,0.00,0.00,0.00
+2026-04-09T00:49:58+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,1760.0860,3857.40,710.80,0.00,48.00,20.00,32.00,0.00,0.00,0.00,0.00
+2026-04-24T08:09:04+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,-57.6644,40.48,0.80,0.00,0.00,100.00,0.00,0.00,0.00,0.00,0.00
+2026-04-24T08:25:50+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,828.7564,3985.48,200.00,0.00,20.00,0.00,80.00,0.00,0.00,0.00,0.00
+2026-04-24T09:37:58+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,2218.3220,3357.20,952.40,0.00,96.00,4.00,0.00,0.00,0.00,0.00,0.00
+2026-04-24T12:26:30+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,2264.9372,3235.28,999.20,0.00,92.00,8.00,0.00,0.00,0.00,0.00,0.00
+2026-04-24T14:48:27+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,2791.8204,4209.12,1208.00,0.00,84.00,16.00,0.00,0.00,0.00,0.00,0.00
+2026-04-24T16:57:02+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,2463.5560,3620.68,1064.00,0.00,76.00,24.00,0.00,0.00,0.00,0.00,0.00
+2026-04-24T19:38:26+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,2455.9532,3774.24,1046.00,0.00,80.00,16.00,4.00,0.00,0.00,0.00,0.00
+2026-04-24T20:25:57+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,2453.9648,3798.60,1064.80,0.00,76.00,20.00,4.00,0.00,0.00,0.00,0.00
+2026-04-25T21:48:00+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,2830.1192,4302.56,1230.40,0.00,80.00,20.00,0.00,0.00,0.00,0.00,0.00
+2026-04-26T10:35:30+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,2473.7144,3653.96,1079.20,0.00,72.00,28.00,0.00,0.00,0.00,0.00,0.00
+2026-04-26T22:36:45+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_64x64/latest.pth,25,3104.0656,4762.48,1331.60,0.00,72.00,28.00,0.00,0.00,0.00,0.00,0.00
