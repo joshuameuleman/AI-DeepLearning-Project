@@ -33,3 +33,5 @@ class TrainConfig:
     eval_max_steps: int = 0
     eval_every_episodes: int = 0
     save_best_eval_checkpoint: bool = False
+    mask_unsafe_actions: bool = False
+    cpu_threads: int = 0

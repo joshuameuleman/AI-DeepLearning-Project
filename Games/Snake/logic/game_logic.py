@@ -484,3 +484,8 @@ class SnakeLogic:
 
     def action_space(self) -> Tuple[int, ...]:
         return (0, 1, 2)
+
+
+# Active clean-slate implementation.
+# Kept here so the existing main.py/DQN dynamic loader can keep importing this path.
+from Games.Snake.logic.clean_logic import Direction, SnakeLogic, StepResult  # noqa: E402,F401

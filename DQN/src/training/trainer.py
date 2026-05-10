@@ -26,6 +26,7 @@ class TrainingResult:
     best_reward: float
     final_epsilon: float
     checkpoint_path: Path
+    best_eval_checkpoint_path: Optional[Path] = None
 
 
 class Trainer:
@@ -44,8 +45,16 @@ class Trainer:
         self.web_feed_path = web_feed_path
         self.resume = resume
         self.enable_live_feed = enable_live_feed
+        if config.cpu_threads > 0:
+            torch.set_num_threads(int(config.cpu_threads))
+            try:
+                torch.set_num_interop_threads(max(1, min(4, int(config.cpu_threads))))
+            except RuntimeError:
+                pass
         if config.device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif config.device == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is False.")
         else:
             self.device = torch.device(config.device)
 
@@ -132,6 +141,14 @@ class Trainer:
     def _sync_target_network(self) -> None:
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
+    def _action_mask_from_state(self, state: Any) -> list[bool] | None:
+        if not self.config.mask_unsafe_actions or self.config.game != "snake":
+            return None
+        try:
+            return [float(state[index]) < 0.5 for index in range(3)]
+        except (TypeError, ValueError, IndexError):
+            return None
+
     def _run_greedy_evaluation(self) -> Dict[str, float]:
         eval_env = GameEnvironment(self.config.game, allow_fallback=False)
         old_epsilon = float(self.agent.state.epsilon)
@@ -156,6 +173,7 @@ class Trainer:
                     len(eval_env.action_space()),
                     policy_net=self.policy_net,
                     device=self.device,
+                    action_mask=self._action_mask_from_state(state),
                 )
                 outcome = eval_env.step(action)
                 state = outcome.state
@@ -233,6 +251,96 @@ class Trainer:
                 writer.writeheader()
             writer.writerow(row)
 
+    def _eval_metric_name(self) -> str:
+        if self.config.game == "flappy":
+            return "avg_steps"
+        if self.config.game == "snake":
+            return "avg_score"
+        return "avg_reward"
+
+    def _eval_metric_value(self, metrics: Dict[str, float]) -> float:
+        return float(metrics[self._eval_metric_name()])
+
+    def _checkpoint_metadata(self, checkpoint_path: Path) -> Dict[str, Any]:
+        if not checkpoint_path.exists():
+            return {}
+        try:
+            payload = torch.load(checkpoint_path, map_location="cpu")
+        except Exception:
+            return {}
+        metadata = payload.get("metadata", {})
+        return metadata if isinstance(metadata, dict) else {}
+
+    def _best_eval_score_from_metadata(self, metadata: Dict[str, Any]) -> float:
+        metric_name = self._eval_metric_name()
+        metadata_key = f"eval_{metric_name}"
+        try:
+            return float(metadata[metadata_key])
+        except (KeyError, TypeError, ValueError):
+            return float("-inf")
+
+    def _save_best_eval_if_improved(
+        self,
+        *,
+        metrics: Dict[str, float],
+        episode: int,
+        checkpoint_path: Path,
+        best_eval_score: float,
+    ) -> float:
+        eval_metric = self._eval_metric_value(metrics)
+        if not self.config.save_best_eval_checkpoint or eval_metric <= best_eval_score:
+            return best_eval_score
+
+        save_checkpoint(
+            path=checkpoint_path,
+            model=self.policy_net,
+            optimizer=self.optimizer,
+            metadata={
+                "game": self.config.game,
+                "episode": episode,
+                "epsilon": self.agent.state.epsilon,
+                "eval_avg_score": float(metrics["avg_score"]),
+                "eval_avg_reward": float(metrics["avg_reward"]),
+                "eval_avg_steps": float(metrics["avg_steps"]),
+                "eval_metric": self._eval_metric_name(),
+                "eval_metric_value": eval_metric,
+            },
+        )
+        print(
+            f"[DQN] New best eval checkpoint: {checkpoint_path} "
+            f"(episode={episode}, {self._eval_metric_name()}={eval_metric:.2f})",
+            flush=True,
+        )
+        return eval_metric
+
+    def _print_eval_summary(self, metrics: Dict[str, float], *, episode: Optional[int] = None) -> None:
+        prefix = f"[DQN] Eval@{episode}" if episode is not None else "[DQN] Eval"
+        if self.config.game == "flappy":
+            print(
+                f"{prefix} (greedy, eps=0) | episodes={int(metrics['eval_episodes'])} | "
+                f"avg_score={metrics['avg_score']:.2f} | "
+                f"avg_reward={metrics['avg_reward']:.2f} | "
+                f"avg_steps={metrics['avg_steps']:.2f} | "
+                f"cap_hit={metrics['max_steps_reached_pct']:.2f}% | "
+                f"pipe={metrics['pipe_collision_pct']:.2f}% | "
+                f"ground={metrics['ground_collision_pct']:.2f}% | "
+                f"ceiling={metrics['ceiling_collision_pct']:.2f}%",
+                flush=True,
+            )
+            return
+
+        print(
+            f"{prefix} (greedy, eps=0) | episodes={int(metrics['eval_episodes'])} | "
+            f"avg_score={metrics['avg_score']:.2f} | "
+            f"avg_reward={metrics['avg_reward']:.2f} | "
+            f"avg_steps={metrics['avg_steps']:.2f} | "
+            f"board_filled={metrics['board_filled_pct']:.2f}% | "
+            f"self={metrics['self_collision_pct']:.2f}% | "
+            f"wall={metrics['wall_collision_pct']:.2f}% | "
+            f"stagnation={metrics['stagnation_timeout_pct']:.2f}%",
+            flush=True,
+        )
+
     def train(self) -> TrainingResult:
         best_reward = float("-inf")
         best_eval_score = float("-inf")
@@ -247,6 +355,9 @@ class Trainer:
         last_checkpoint = self.checkpoint_dir / "latest.pth"
         best_eval_checkpoint = self.checkpoint_dir / "best_eval.pth"
         metrics_path = self.logs_dir / "metrics.csv"
+        best_eval_score = self._best_eval_score_from_metadata(
+            self._checkpoint_metadata(best_eval_checkpoint)
+        )
 
         if self.resume and last_checkpoint.exists():
             try:
@@ -316,6 +427,7 @@ class Trainer:
                         len(self.env.action_space()),
                         policy_net=self.policy_net,
                         device=self.device,
+                        action_mask=self._action_mask_from_state(state),
                     )
                     outcome = self.env.step(action)
                     episode_pipes_passed += int(outcome.info.get("passed_pipes", 0))
@@ -419,45 +531,20 @@ class Trainer:
                     )
 
                 if (
-                    self.config.game == "flappy"
-                    and self.config.eval_enabled
+                    self.config.eval_enabled
+                    and self.config.eval_episodes > 0
                     and self.config.eval_every_episodes > 0
                     and episode % self.config.eval_every_episodes == 0
                 ):
                     periodic_eval = self._run_greedy_evaluation()
                     self._append_eval_metrics(periodic_eval, last_checkpoint)
-                    eval_metric = float(periodic_eval["avg_steps"])
-                    if self.config.save_best_eval_checkpoint and eval_metric > best_eval_score:
-                        best_eval_score = eval_metric
-                        save_checkpoint(
-                            path=best_eval_checkpoint,
-                            model=self.policy_net,
-                            optimizer=self.optimizer,
-                            metadata={
-                                "game": self.config.game,
-                                "episode": episode,
-                                "epsilon": self.agent.state.epsilon,
-                                "eval_avg_score": float(periodic_eval["avg_score"]),
-                                "eval_avg_reward": float(periodic_eval["avg_reward"]),
-                                "eval_avg_steps": float(periodic_eval["avg_steps"]),
-                            },
-                        )
-                        print(
-                            f"[DQN] New best eval checkpoint: {best_eval_checkpoint} "
-                            f"(episode={episode}, avg_steps={eval_metric:.2f})",
-                            flush=True,
-                        )
-
-                    print(
-                        f"[DQN] Eval@{episode} (greedy, eps=0) | "
-                        f"avg_score={periodic_eval['avg_score']:.2f} | "
-                        f"avg_reward={periodic_eval['avg_reward']:.2f} | "
-                        f"cap_hit={periodic_eval['max_steps_reached_pct']:.2f}% | "
-                        f"pipe={periodic_eval['pipe_collision_pct']:.2f}% | "
-                        f"ground={periodic_eval['ground_collision_pct']:.2f}% | "
-                        f"ceiling={periodic_eval['ceiling_collision_pct']:.2f}%",
-                        flush=True,
+                    best_eval_score = self._save_best_eval_if_improved(
+                        metrics=periodic_eval,
+                        episode=episode,
+                        checkpoint_path=best_eval_checkpoint,
+                        best_eval_score=best_eval_score,
                     )
+                    self._print_eval_summary(periodic_eval, episode=episode)
 
         self._write_web_feed(
             training=False,
@@ -487,52 +574,13 @@ class Trainer:
         if self.config.eval_enabled and self.config.eval_episodes > 0:
             eval_metrics = self._run_greedy_evaluation()
             self._append_eval_metrics(eval_metrics, last_checkpoint)
-
-            if self.config.game == "flappy":
-                eval_metric = float(eval_metrics["avg_steps"])
-                if self.config.save_best_eval_checkpoint and eval_metric > best_eval_score:
-                    best_eval_score = eval_metric
-                    save_checkpoint(
-                        path=best_eval_checkpoint,
-                        model=self.policy_net,
-                        optimizer=self.optimizer,
-                        metadata={
-                            "game": self.config.game,
-                            "episode": self.config.episodes,
-                            "epsilon": self.agent.state.epsilon,
-                            "eval_avg_score": float(eval_metrics["avg_score"]),
-                            "eval_avg_reward": float(eval_metrics["avg_reward"]),
-                            "eval_avg_steps": float(eval_metrics["avg_steps"]),
-                        },
-                    )
-                    print(
-                        f"[DQN] New best eval checkpoint: {best_eval_checkpoint} "
-                        f"(episode={self.config.episodes}, avg_steps={eval_metric:.2f})",
-                        flush=True,
-                    )
-
-                print(
-                    f"[DQN] Eval (greedy, eps=0) | episodes={int(eval_metrics['eval_episodes'])} | "
-                    f"avg_score={eval_metrics['avg_score']:.2f} | "
-                    f"avg_reward={eval_metrics['avg_reward']:.2f} | "
-                    f"avg_steps={eval_metrics['avg_steps']:.2f} | "
-                    f"cap_hit={eval_metrics['max_steps_reached_pct']:.2f}% | "
-                    f"pipe={eval_metrics['pipe_collision_pct']:.2f}% | "
-                    f"ground={eval_metrics['ground_collision_pct']:.2f}% | "
-                    f"ceiling={eval_metrics['ceiling_collision_pct']:.2f}%",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"[DQN] Eval (greedy, eps=0) | episodes={int(eval_metrics['eval_episodes'])} | "
-                    f"avg_score={eval_metrics['avg_score']:.2f} | "
-                    f"avg_reward={eval_metrics['avg_reward']:.2f} | "
-                    f"avg_steps={eval_metrics['avg_steps']:.2f} | "
-                    f"board_filled={eval_metrics['board_filled_pct']:.2f}% | "
-                    f"self={eval_metrics['self_collision_pct']:.2f}% | "
-                    f"wall={eval_metrics['wall_collision_pct']:.2f}%",
-                    flush=True,
-                )
+            best_eval_score = self._save_best_eval_if_improved(
+                metrics=eval_metrics,
+                episode=self.config.episodes,
+                checkpoint_path=best_eval_checkpoint,
+                best_eval_score=best_eval_score,
+            )
+            self._print_eval_summary(eval_metrics)
             print(f"[DQN] Eval metrics logged: {self.logs_dir / 'eval_metrics.csv'}", flush=True)
 
         return TrainingResult(
@@ -540,6 +588,7 @@ class Trainer:
             best_reward=best_reward,
             final_epsilon=self.agent.state.epsilon,
             checkpoint_path=last_checkpoint,
+            best_eval_checkpoint_path=best_eval_checkpoint if best_eval_checkpoint.exists() else None,
         )
 
     def _learn_if_possible(self) -> None:
@@ -555,17 +604,32 @@ class Trainer:
         dones_np = np.fromiter((float(transition.done) for transition in batch), dtype=np.float32, count=sampled_count)
         weights_np = np.asarray(sample_weights, dtype=np.float32)
 
-        states = torch.from_numpy(states_np).to(self.device, non_blocking=True)
-        actions = torch.from_numpy(actions_np).to(self.device, non_blocking=True).unsqueeze(1)
-        rewards = torch.from_numpy(rewards_np).to(self.device, non_blocking=True)
-        next_states = torch.from_numpy(next_states_np).to(self.device, non_blocking=True)
-        dones = torch.from_numpy(dones_np).to(self.device, non_blocking=True)
-        weights = torch.from_numpy(weights_np).to(self.device, non_blocking=True)
+        pin_memory = self.device.type == "cuda"
+        states = torch.from_numpy(states_np).pin_memory() if pin_memory else torch.from_numpy(states_np)
+        actions = torch.from_numpy(actions_np).pin_memory() if pin_memory else torch.from_numpy(actions_np)
+        rewards = torch.from_numpy(rewards_np).pin_memory() if pin_memory else torch.from_numpy(rewards_np)
+        next_states = torch.from_numpy(next_states_np).pin_memory() if pin_memory else torch.from_numpy(next_states_np)
+        dones = torch.from_numpy(dones_np).pin_memory() if pin_memory else torch.from_numpy(dones_np)
+        weights = torch.from_numpy(weights_np).pin_memory() if pin_memory else torch.from_numpy(weights_np)
+
+        states = states.to(self.device, non_blocking=True)
+        actions = actions.to(self.device, non_blocking=True).unsqueeze(1)
+        rewards = rewards.to(self.device, non_blocking=True)
+        next_states = next_states.to(self.device, non_blocking=True)
+        dones = dones.to(self.device, non_blocking=True)
+        weights = weights.to(self.device, non_blocking=True)
 
         current_q_values = self.policy_net(states).gather(1, actions).squeeze(1)
         with torch.no_grad():
             # Double DQN: choose actions with policy net, evaluate with target net.
-            next_actions = self.policy_net(next_states).argmax(dim=1, keepdim=True)
+            next_policy_q = self.policy_net(next_states)
+            if self.config.mask_unsafe_actions and self.config.game == "snake":
+                safe_mask_np = next_states_np[:, :3] < 0.5
+                all_blocked = ~safe_mask_np.any(axis=1)
+                safe_mask_np[all_blocked] = True
+                safe_mask = torch.from_numpy(safe_mask_np).to(self.device, non_blocking=True)
+                next_policy_q = next_policy_q.masked_fill(~safe_mask, -1.0e9)
+            next_actions = next_policy_q.argmax(dim=1, keepdim=True)
             next_q_values = self.target_net(next_states).gather(1, next_actions).squeeze(1)
             targets = rewards + self.config.gamma * next_q_values * (1.0 - dones)
 

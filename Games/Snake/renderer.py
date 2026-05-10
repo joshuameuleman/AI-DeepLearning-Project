@@ -11,8 +11,10 @@ from .logic.game_logic import SnakeLogic
 class SnakeRenderer:
     """Renders Snake game state using Pygame."""
     
-    # Cell size in pixels
+    # Cell size in pixels. Large grids are scaled down to keep the window usable.
     CELL_SIZE = 30
+    MIN_CELL_SIZE = 5
+    MAX_BOARD_PIXELS = 840
     BORDER_TILES = 1
     HUD_HEIGHT = 40
     
@@ -31,10 +33,17 @@ class SnakeRenderer:
             )
 
         self.game = game
-        self.window_width = (game.GRID_WIDTH + 2 * self.BORDER_TILES) * self.CELL_SIZE
-        self.window_height = self.HUD_HEIGHT + (game.GRID_HEIGHT + 2 * self.BORDER_TILES) * self.CELL_SIZE
-        self.play_origin_x = self.BORDER_TILES * self.CELL_SIZE
-        self.play_origin_y = self.HUD_HEIGHT + self.BORDER_TILES * self.CELL_SIZE
+        board_tiles_w = game.GRID_WIDTH + 2 * self.BORDER_TILES
+        board_tiles_h = game.GRID_HEIGHT + 2 * self.BORDER_TILES
+        largest_axis = max(board_tiles_w, board_tiles_h)
+        self.cell_size = max(
+            self.MIN_CELL_SIZE,
+            min(self.CELL_SIZE, self.MAX_BOARD_PIXELS // max(1, largest_axis)),
+        )
+        self.window_width = board_tiles_w * self.cell_size
+        self.window_height = self.HUD_HEIGHT + board_tiles_h * self.cell_size
+        self.play_origin_x = self.BORDER_TILES * self.cell_size
+        self.play_origin_y = self.HUD_HEIGHT + self.BORDER_TILES * self.cell_size
         
         # Hide pygame startup banner and initialize only display/font to avoid ALSA noise.
         os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -62,7 +71,7 @@ class SnakeRenderer:
             return None
         try:
             surface = pygame.image.load(str(path)).convert_alpha()
-            return pygame.transform.smoothscale(surface, (self.CELL_SIZE, self.CELL_SIZE))
+            return pygame.transform.smoothscale(surface, (self.cell_size, self.cell_size))
         except pygame.error:
             return None
         
@@ -101,18 +110,18 @@ class SnakeRenderer:
     def _draw_grid(self) -> None:
         """Draw grid lines."""
         for x in range(self.game.GRID_WIDTH + 1):
-            start_pos = (self.play_origin_x + x * self.CELL_SIZE, self.play_origin_y)
+            start_pos = (self.play_origin_x + x * self.cell_size, self.play_origin_y)
             end_pos = (
-                self.play_origin_x + x * self.CELL_SIZE,
-                self.play_origin_y + self.game.GRID_HEIGHT * self.CELL_SIZE,
+                self.play_origin_x + x * self.cell_size,
+                self.play_origin_y + self.game.GRID_HEIGHT * self.cell_size,
             )
             pygame.draw.line(self.screen, self.COLOR_GRID, start_pos, end_pos, 1)
         
         for y in range(self.game.GRID_HEIGHT + 1):
-            start_pos = (self.play_origin_x, self.play_origin_y + y * self.CELL_SIZE)
+            start_pos = (self.play_origin_x, self.play_origin_y + y * self.cell_size)
             end_pos = (
-                self.play_origin_x + self.game.GRID_WIDTH * self.CELL_SIZE,
-                self.play_origin_y + y * self.CELL_SIZE,
+                self.play_origin_x + self.game.GRID_WIDTH * self.cell_size,
+                self.play_origin_y + y * self.cell_size,
             )
             pygame.draw.line(self.screen, self.COLOR_GRID, start_pos, end_pos, 1)
 
@@ -127,13 +136,13 @@ class SnakeRenderer:
                 if not is_border:
                     continue
 
-                pixel_x = tx * self.CELL_SIZE
-                pixel_y = self.HUD_HEIGHT + ty * self.CELL_SIZE
+                pixel_x = tx * self.cell_size
+                pixel_y = self.HUD_HEIGHT + ty * self.cell_size
 
                 if self._tex_wall is not None:
                     self.screen.blit(self._tex_wall, (pixel_x, pixel_y))
                 else:
-                    wall_rect = pygame.Rect(pixel_x, pixel_y, self.CELL_SIZE, self.CELL_SIZE)
+                    wall_rect = pygame.Rect(pixel_x, pixel_y, self.cell_size, self.cell_size)
                     pygame.draw.rect(self.screen, (70, 70, 70), wall_rect)
 
     def _rotation_from_delta(self, dx: int, dy: int) -> float:
@@ -157,17 +166,17 @@ class SnakeRenderer:
         # Draw middle/body segments
         for i in range(1, max(1, len(body) - 1)):
             x, y = body[i]
-            pixel = (self.play_origin_x + x * self.CELL_SIZE, self.play_origin_y + y * self.CELL_SIZE)
+            pixel = (self.play_origin_x + x * self.cell_size, self.play_origin_y + y * self.cell_size)
 
             if self._tex_body is not None:
                 self.screen.blit(self._tex_body, pixel)
             else:
-                rect = pygame.Rect(pixel[0] + 2, pixel[1] + 2, self.CELL_SIZE - 4, self.CELL_SIZE - 4)
+                rect = pygame.Rect(pixel[0] + 2, pixel[1] + 2, self.cell_size - 4, self.cell_size - 4)
                 pygame.draw.rect(self.screen, self.COLOR_SNAKE, rect)
 
         # Draw head
         hx, hy = body[0]
-        head_pixel = (self.play_origin_x + hx * self.CELL_SIZE, self.play_origin_y + hy * self.CELL_SIZE)
+        head_pixel = (self.play_origin_x + hx * self.cell_size, self.play_origin_y + hy * self.cell_size)
         if len(body) > 1:
             nx, ny = body[1]
             head_rot = self._rotation_from_delta(hx - nx, hy - ny)
@@ -176,10 +185,10 @@ class SnakeRenderer:
 
         if self._tex_head is not None:
             head_sprite = pygame.transform.rotate(self._tex_head, -head_rot)
-            head_rect = head_sprite.get_rect(center=(head_pixel[0] + self.CELL_SIZE // 2, head_pixel[1] + self.CELL_SIZE // 2))
+            head_rect = head_sprite.get_rect(center=(head_pixel[0] + self.cell_size // 2, head_pixel[1] + self.cell_size // 2))
             self.screen.blit(head_sprite, head_rect.topleft)
         else:
-            rect = pygame.Rect(head_pixel[0] + 2, head_pixel[1] + 2, self.CELL_SIZE - 4, self.CELL_SIZE - 4)
+            rect = pygame.Rect(head_pixel[0] + 2, head_pixel[1] + 2, self.cell_size - 4, self.cell_size - 4)
             pygame.draw.rect(self.screen, (100, 255, 100), rect)
 
         # Draw tail if there is one
@@ -187,11 +196,11 @@ class SnakeRenderer:
             tx, ty = body[-1]
             px, py = body[-2]
             tail_rot = self._rotation_from_delta(px - tx, py - ty)
-            tail_pixel = (self.play_origin_x + tx * self.CELL_SIZE, self.play_origin_y + ty * self.CELL_SIZE)
+            tail_pixel = (self.play_origin_x + tx * self.cell_size, self.play_origin_y + ty * self.cell_size)
 
             if self._tex_tail is not None:
                 tail_sprite = pygame.transform.rotate(self._tex_tail, -tail_rot)
-                tail_rect = tail_sprite.get_rect(center=(tail_pixel[0] + self.CELL_SIZE // 2, tail_pixel[1] + self.CELL_SIZE // 2))
+                tail_rect = tail_sprite.get_rect(center=(tail_pixel[0] + self.cell_size // 2, tail_pixel[1] + self.cell_size // 2))
                 self.screen.blit(tail_sprite, tail_rect.topleft)
     
     def _draw_food(self) -> None:
@@ -202,11 +211,12 @@ class SnakeRenderer:
             foods = [primary_food]
 
         for x, y in foods:
-            pixel = (self.play_origin_x + x * self.CELL_SIZE, self.play_origin_y + y * self.CELL_SIZE)
+            pixel = (self.play_origin_x + x * self.cell_size, self.play_origin_y + y * self.cell_size)
             if self._tex_food is not None:
                 self.screen.blit(self._tex_food, pixel)
             else:
-                rect = pygame.Rect(pixel[0] + 5, pixel[1] + 5, self.CELL_SIZE - 10, self.CELL_SIZE - 10)
+                inset = max(2, self.cell_size // 6)
+                rect = pygame.Rect(pixel[0] + inset, pixel[1] + inset, self.cell_size - 2 * inset, self.cell_size - 2 * inset)
                 pygame.draw.ellipse(self.screen, self.COLOR_FOOD, rect)
     
     def _draw_score(self) -> None:

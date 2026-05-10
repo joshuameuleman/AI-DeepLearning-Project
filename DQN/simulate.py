@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -9,13 +10,8 @@ from pathlib import Path
 if __package__ is None or __package__ == "":
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import torch
-
-from DQN.src.agents.dqn_agent import DQNAgent
 from DQN.src.envs.game_catalog import GAME_LOGIC_FILE_BY_GAME, SUPPORTED_GAMES
 from DQN.src.envs.game_env import GameEnvironment
-from DQN.src.models.checkpoint import load_checkpoint
-from DQN.src.models.q_network import QNetwork
 from DQN.src.utils.live_feed import build_flappy_payload, build_snake_payload, publish_state
 from DQN.src.utils.paths import workspace_root
 from DQN.src.utils.snake_config import apply_snake_grid_size, resolve_snake_grid_size
@@ -30,6 +26,8 @@ AGENT_BY_GAME = {
 def _infer_qnetwork_dims_from_checkpoint(checkpoint_path: Path) -> tuple[int, int, int] | None:
     """Return (input_size, hidden_size, output_size) inferred from QNetwork weights."""
     try:
+        import torch
+
         payload = torch.load(checkpoint_path, map_location="cpu")
     except Exception:
         return None
@@ -64,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", default="latest.pth")
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--loop", action="store_true", help="Play continuously until interrupted")
+    parser.add_argument("--solver", choices=("auto", "dqn", "hamiltonian"), default="auto", help="Use a checkpointed DQN or the optional Snake benchmark solver")
     parser.add_argument("--grid-size", type=int, default=None, help="Snake grid size (e.g. 32, 64, 128)")
     parser.add_argument("--max-steps", type=int, default=0, help="Per-episode step cap (0 means no cap)")
     parser.add_argument("--render", action="store_true", help="Render game in a live window while simulating")
@@ -179,6 +178,13 @@ def _publish_live_feed(
         )
 
 
+def _snake_action_mask_from_state(state) -> list[bool] | None:
+    try:
+        return [float(state[index]) < 0.5 for index in range(3)]
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
 def run_simulation(
     game: str,
     checkpoint: str = "latest.pth",
@@ -193,6 +199,7 @@ def run_simulation(
     live_every_n_steps: int = 1,
     serve_live: bool = False,
     open_browser: bool = False,
+    solver: str = "dqn",
 ) -> None:
     selected_game = game.lower().strip()
     if selected_game not in SUPPORTED_GAMES:
@@ -220,11 +227,19 @@ def run_simulation(
         except OSError as exc:
             print(f"[DQN] Live server could not start on port 8000: {exc}")
 
-    selected_agent = AGENT_BY_GAME[selected_game]
+    selected_solver = solver.lower().strip()
+    if selected_solver == "auto":
+        selected_solver = "dqn"
+    if selected_solver == "hamiltonian" and selected_game != "snake":
+        raise ValueError("--solver hamiltonian is only available for snake")
+
+    selected_agent = "HamiltonianSnakeSolver" if selected_solver == "hamiltonian" else AGENT_BY_GAME[selected_game]
     game_logic_file = GAME_LOGIC_FILE_BY_GAME[selected_game]
     checkpoint_path = _resolve_checkpoint_path(selected_game, checkpoint, resolved_grid_size)
+    if selected_game == "snake":
+        os.environ["SNAKE_HAMILTONIAN_START"] = "1" if selected_solver == "hamiltonian" else "0"
 
-    if not checkpoint_path.exists():
+    if selected_solver == "dqn" and not checkpoint_path.exists():
         raise FileNotFoundError(
             f"Checkpoint not found: {checkpoint_path}. "
             "Use --checkpoint with an absolute path or a checkpoint filename in DQN/checkpoints/<run_name>/"
@@ -271,27 +286,40 @@ def run_simulation(
         else:
             print("[DQN] Render mode is currently supported for snake/flappy only. Continuing without window rendering.")
 
-    inferred_dims = _infer_qnetwork_dims_from_checkpoint(checkpoint_path)
-    hidden_size = 256
-    if inferred_dims is not None:
-        ckpt_state_size, ckpt_hidden_size, ckpt_actions = inferred_dims
-        if ckpt_state_size != state_size:
+    metadata = {}
+    policy_net = None
+    inference_agent = None
+    if selected_solver == "dqn":
+        try:
+            from DQN.src.agents.dqn_agent import DQNAgent
+            from DQN.src.models.checkpoint import load_checkpoint
+            from DQN.src.models.q_network import QNetwork
+        except ModuleNotFoundError as exc:
             raise RuntimeError(
-                f"Checkpoint state size mismatch: checkpoint expects {ckpt_state_size}, "
-                f"but environment provides {state_size}."
-            )
-        if ckpt_actions != n_actions:
-            raise RuntimeError(
-                f"Checkpoint action size mismatch: checkpoint expects {ckpt_actions}, "
-                f"but environment provides {n_actions}."
-            )
-        hidden_size = ckpt_hidden_size
+                "DQN simulation requires PyTorch. Use --solver hamiltonian for "
+                "the built-in Snake board-fill solver without PyTorch."
+            ) from exc
 
-    policy_net = QNetwork(state_size, hidden_size=hidden_size, output_size=n_actions)
-    metadata = load_checkpoint(checkpoint_path, policy_net, optimizer=None)
-    policy_net.eval()
+        inferred_dims = _infer_qnetwork_dims_from_checkpoint(checkpoint_path)
+        hidden_size = 256
+        if inferred_dims is not None:
+            ckpt_state_size, ckpt_hidden_size, ckpt_actions = inferred_dims
+            if ckpt_state_size != state_size:
+                raise RuntimeError(
+                    f"Checkpoint state size mismatch: checkpoint expects {ckpt_state_size}, "
+                    f"but environment provides {state_size}."
+                )
+            if ckpt_actions != n_actions:
+                raise RuntimeError(
+                    f"Checkpoint action size mismatch: checkpoint expects {ckpt_actions}, "
+                    f"but environment provides {n_actions}."
+                )
+            hidden_size = ckpt_hidden_size
 
-    inference_agent = DQNAgent(epsilon_start=0.0, epsilon_end=0.0, epsilon_decay=1.0)
+        policy_net = QNetwork(state_size, hidden_size=hidden_size, output_size=n_actions)
+        metadata = load_checkpoint(checkpoint_path, policy_net, optimizer=None)
+        policy_net.eval()
+        inference_agent = DQNAgent(epsilon_start=0.0, epsilon_end=0.0, epsilon_decay=1.0)
 
     requested_episodes = max(1, int(episodes))
     total_episodes = float("inf") if loop else requested_episodes
@@ -300,7 +328,8 @@ def run_simulation(
     print(f"[DQN] Simulation start for game={selected_game}")
     print(f"[DQN] Agent selected: {selected_agent}")
     print(f"[DQN] Game logic: {game_logic_file}")
-    print(f"[DQN] Checkpoint: {checkpoint_path}")
+    if selected_solver == "dqn":
+        print(f"[DQN] Checkpoint: {checkpoint_path}")
     if metadata:
         print(f"[DQN] Checkpoint metadata: {metadata}")
     print(f"[DQN] Episodes: {'infinite (--loop)' if loop else requested_episodes}")
@@ -329,11 +358,18 @@ def run_simulation(
             last_info = {}
 
             while not done and (max_steps <= 0 or steps < max_steps):
-                action = inference_agent.select_action(
-                    state,
-                    n_actions=n_actions,
-                    policy_net=policy_net,
-                )
+                if selected_solver == "hamiltonian":
+                    logic_instance = getattr(env, "_logic_instance", None)
+                    action = int(logic_instance.expert_action())
+                else:
+                    assert inference_agent is not None
+                    assert policy_net is not None
+                    action = inference_agent.select_action(
+                        state,
+                        n_actions=n_actions,
+                        policy_net=policy_net,
+                        action_mask=_snake_action_mask_from_state(state) if selected_game == "snake" else None,
+                    )
                 outcome = env.step(action)
                 state = outcome.state
                 done = outcome.done
@@ -399,6 +435,7 @@ def main() -> None:
         live_every_n_steps=args.live_every,
         serve_live=args.serve_live,
         open_browser=args.open_browser,
+        solver=args.solver,
     )
 
 
