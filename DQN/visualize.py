@@ -13,7 +13,11 @@ from DQN.simulate import run_simulation
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize a trained DQN agent.")
     parser.add_argument("--game", default="snake", choices=["snake", "flappy", "2048"])
-    parser.add_argument("--checkpoint", default="latest.pth")
+    parser.add_argument(
+        "--checkpoint",
+        default="auto",
+        help="Checkpoint filename/path. Default 'auto' uses best_eval.pth when available, otherwise latest.pth.",
+    )
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--grid-size", type=int, default=None, help="Snake grid size (e.g. 32, 64, 128)")
     return parser.parse_args()

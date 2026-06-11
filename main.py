@@ -59,7 +59,7 @@ def prompt_episodes(default: int = 5) -> int:
     return default
 
 
-def prompt_checkpoint(default: str = "latest.pth") -> str:
+def prompt_checkpoint(default: str = "auto") -> str:
     raw = input(f"Checkpoint [{default}]: ").strip()
     return raw if raw else default
 
@@ -68,9 +68,9 @@ def prompt_solver(game: str, default: str = "dqn") -> str:
     if game != "snake":
         return "dqn"
 
-    print("Snake solver:")
-    print("  1. dqn (deep learning checkpoint)")
-    print("  2. hamiltonian (algoritmische benchmark, geen deep learning)")
+    print("Snake solver (optioneel):")
+    print("  1. dqn (reinforcement learning checkpoint, aanbevolen)")
+    print("  2. hamiltonian (optionele benchmark, geen training)")
     while True:
         raw = input(f"Jouw keuze [{default}]: ").strip().lower()
         if not raw:
@@ -84,7 +84,7 @@ def prompt_solver(game: str, default: str = "dqn") -> str:
 
 def prompt_training_strategy() -> bool:
     print("Trainingsmodus:")
-    print("  1. verder zetten (resume vanaf latest checkpoint)")
+    print("  1. verder zetten (resume vanaf best_eval checkpoint als die bestaat)")
     print("  2. opnieuw beginnen (fresh start)")
     while True:
         raw = input("Jouw keuze [1]: ").strip().lower()
@@ -286,7 +286,7 @@ def main() -> None:
         episodes = prompt_episodes(default=1 if mode == "visualize" else 5)
         grid_size = prompt_snake_grid_size() if game == "snake" else None
         solver = prompt_solver(game) if game == "snake" else "dqn"
-        checkpoint = "latest.pth" if solver == "hamiltonian" else prompt_checkpoint()
+        checkpoint = "auto" if solver == "hamiltonian" else prompt_checkpoint()
 
         if mode == "simulate":
             live_follow = prompt_live_follow(default=False) if game in ("snake", "flappy") else False

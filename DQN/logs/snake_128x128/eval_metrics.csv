@@ -1,0 +1,7 @@
+timestamp_utc,game,checkpoint,eval_episodes,avg_reward,avg_steps,avg_score,board_filled_pct,self_collision_pct,wall_collision_pct,stagnation_timeout_pct,pipe_collision_pct,ground_collision_pct,ceiling_collision_pct,max_steps_reached_pct
+2026-06-10T09:21:31+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_128x128/latest.pth,50,1179.4813,4638.68,501.40,0.00,100.00,0.00,0.00,0.00,0.00,0.00,0.00
+2026-06-10T10:44:16+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_128x128/latest.pth,50,2240.3353,8371.28,956.00,0.00,100.00,0.00,0.00,0.00,0.00,0.00,0.00
+2026-06-10T13:17:32+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_128x128/latest.pth,50,2498.1835,11027.10,1043.20,0.00,98.00,0.00,2.00,0.00,0.00,0.00,0.00
+2026-06-10T16:43:22+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_128x128/latest.pth,50,2166.7185,8040.02,922.60,0.00,100.00,0.00,0.00,0.00,0.00,0.00,0.00
+2026-06-10T20:37:51+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_128x128/latest.pth,50,2191.2507,8115.86,935.80,0.00,100.00,0.00,0.00,0.00,0.00,0.00,0.00
+2026-06-10T20:44:06+00:00,snake,/root/AI-DeepLearning-Project/DQN/checkpoints/snake_128x128/latest.pth,50,2309.9585,8582.04,983.80,0.00,100.00,0.00,0.00,0.00,0.00,0.00,0.00

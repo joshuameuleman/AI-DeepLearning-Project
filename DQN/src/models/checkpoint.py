@@ -20,7 +20,14 @@ def save_checkpoint(path: Path, model: torch.nn.Module, optimizer: torch.optim.O
 
 def load_checkpoint(path: Path, model: torch.nn.Module, optimizer: torch.optim.Optimizer | None = None) -> Dict[str, Any]:
     payload = torch.load(path, map_location="cpu")
-    model.load_state_dict(payload["model_state_dict"])
+    try:
+        model.load_state_dict(payload["model_state_dict"])
+    except (ValueError, RuntimeError) as exc:
+        print(f"[DQN] Skipping checkpoint restore for {path.name}: {exc}", flush=True)
+        return {}
     if optimizer is not None and "optimizer_state_dict" in payload:
-        optimizer.load_state_dict(payload["optimizer_state_dict"])
+        try:
+            optimizer.load_state_dict(payload["optimizer_state_dict"])
+        except (ValueError, RuntimeError) as exc:
+            print(f"[DQN] Skipping optimizer restore for {path.name}: {exc}", flush=True)
     return payload.get("metadata", {})

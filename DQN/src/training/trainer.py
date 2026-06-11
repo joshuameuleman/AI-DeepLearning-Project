@@ -139,7 +139,14 @@ class Trainer:
         publish_state(payload)
 
     def _sync_target_network(self) -> None:
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+        # Support soft (Polyak) updates for stability when enabled in config.
+        if getattr(self.config, "use_polyak_target", False):
+            tau = float(getattr(self.config, "polyak_tau", 0.005))
+            for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
+                target_param.data.mul_(1.0 - tau)
+                target_param.data.add_(policy_param.data * tau)
+        else:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
 
     def _action_mask_from_state(self, state: Any) -> list[bool] | None:
         if not self.config.mask_unsafe_actions or self.config.game != "snake":
@@ -148,6 +155,16 @@ class Trainer:
             return [float(state[index]) < 0.5 for index in range(3)]
         except (TypeError, ValueError, IndexError):
             return None
+
+    def _masked_next_policy_q(self, next_states: torch.Tensor, next_states_np: np.ndarray) -> torch.Tensor:
+        next_policy_q = self.policy_net(next_states)
+        if self.config.mask_unsafe_actions and self.config.game == "snake":
+            safe_mask_np = next_states_np[:, :3] < 0.5
+            all_blocked = ~safe_mask_np.any(axis=1)
+            safe_mask_np[all_blocked] = True
+            safe_mask = torch.from_numpy(safe_mask_np).to(self.device, non_blocking=True)
+            next_policy_q = next_policy_q.masked_fill(~safe_mask, -1.0e9)
+        return next_policy_q
 
     def _run_greedy_evaluation(self) -> Dict[str, float]:
         eval_env = GameEnvironment(self.config.game, allow_fallback=False)
@@ -279,6 +296,22 @@ class Trainer:
         except (KeyError, TypeError, ValueError):
             return float("-inf")
 
+    def _preferred_resume_checkpoint(self) -> Path:
+        best_eval_checkpoint = self.checkpoint_dir / "best_eval.pth"
+        if best_eval_checkpoint.exists():
+            return best_eval_checkpoint
+        return self.checkpoint_dir / "latest.pth"
+
+    def _resume_candidates(self) -> list[Path]:
+        best_eval_checkpoint = self.checkpoint_dir / "best_eval.pth"
+        latest_checkpoint = self.checkpoint_dir / "latest.pth"
+        candidates = []
+        if best_eval_checkpoint.exists():
+            candidates.append(best_eval_checkpoint)
+        if latest_checkpoint.exists() and latest_checkpoint not in candidates:
+            candidates.append(latest_checkpoint)
+        return candidates
+
     def _save_best_eval_if_improved(
         self,
         *,
@@ -304,6 +337,7 @@ class Trainer:
                 "eval_avg_steps": float(metrics["avg_steps"]),
                 "eval_metric": self._eval_metric_name(),
                 "eval_metric_value": eval_metric,
+                "algorithm": "double_dqn" if self.config.double_dqn else "dqn",
             },
         )
         print(
@@ -312,6 +346,58 @@ class Trainer:
             flush=True,
         )
         return eval_metric
+
+    def _restore_best_eval_if_regressed(
+        self,
+        *,
+        metrics: Dict[str, float],
+        best_eval_checkpoint: Path,
+        last_checkpoint: Path,
+        best_eval_score: float,
+    ) -> bool:
+        if (
+            not self.config.restore_best_eval_on_regression
+            or not best_eval_checkpoint.exists()
+            or best_eval_score == float("-inf")
+        ):
+            return False
+
+        eval_metric = self._eval_metric_value(metrics)
+        regression_threshold = min(
+            best_eval_score * float(self.config.eval_regression_ratio),
+            best_eval_score - float(self.config.eval_regression_min_gap),
+        )
+        if eval_metric >= regression_threshold:
+            return False
+
+        metadata = load_checkpoint(best_eval_checkpoint, self.policy_net, self.optimizer)
+        self.policy_net.to(self.device)
+        self._move_optimizer_state_to_device()
+        self._sync_target_network()
+        if "epsilon" in metadata:
+            self.agent.state.epsilon = max(
+                float(self.agent.state.epsilon),
+                float(metadata["epsilon"]),
+                float(self.config.epsilon_end),
+            )
+        save_checkpoint(
+            path=last_checkpoint,
+            model=self.policy_net,
+            optimizer=self.optimizer,
+            metadata={
+                **metadata,
+                "restored_from_best_eval": True,
+                "restored_after_eval_metric": eval_metric,
+                "restored_best_eval_metric": best_eval_score,
+                "algorithm": "double_dqn" if self.config.double_dqn else "dqn",
+            },
+        )
+        print(
+            f"[DQN] Eval regression detected ({self._eval_metric_name()}={eval_metric:.2f}, "
+            f"best={best_eval_score:.2f}); restored {best_eval_checkpoint} -> {last_checkpoint}",
+            flush=True,
+        )
+        return True
 
     def _print_eval_summary(self, metrics: Dict[str, float], *, episode: Optional[int] = None) -> None:
         prefix = f"[DQN] Eval@{episode}" if episode is not None else "[DQN] Eval"
@@ -354,34 +440,45 @@ class Trainer:
         ceiling_collision_count = 0
         last_checkpoint = self.checkpoint_dir / "latest.pth"
         best_eval_checkpoint = self.checkpoint_dir / "best_eval.pth"
+        resume_checkpoint = self._preferred_resume_checkpoint()
         metrics_path = self.logs_dir / "metrics.csv"
         best_eval_score = self._best_eval_score_from_metadata(
             self._checkpoint_metadata(best_eval_checkpoint)
         )
+        resume_episode_offset = 0
 
-        if self.resume and last_checkpoint.exists():
-            try:
-                metadata = load_checkpoint(last_checkpoint, self.policy_net, self.optimizer)
-                self.policy_net.to(self.device)
-                self._move_optimizer_state_to_device()
-                self.target_net.load_state_dict(self.policy_net.state_dict())
-                if "epsilon" in metadata:
-                    self.agent.state.epsilon = float(metadata["epsilon"])
-                if "best_reward" in metadata:
-                    best_reward = float(metadata["best_reward"])
-                print(
-                    f"[DQN] Resume from checkpoint: {last_checkpoint} "
-                    f"(last_episode={metadata.get('episode', 'unknown')}, epsilon={self.agent.state.epsilon:.4f})"
-                )
-            except Exception as exc:
-                print(
-                    f"[DQN] Checkpoint incompatible ({exc.__class__.__name__}); "
-                    f"starting fresh for this run."
-                )
+        if self.resume and resume_checkpoint.exists():
+            for candidate in self._resume_candidates():
+                try:
+                    metadata = load_checkpoint(candidate, self.policy_net, self.optimizer)
+                    self.policy_net.to(self.device)
+                    self._move_optimizer_state_to_device()
+                    self.target_net.load_state_dict(self.policy_net.state_dict())
+                    if "epsilon" in metadata:
+                        self.agent.state.epsilon = float(metadata["epsilon"])
+                    if "best_reward" in metadata:
+                        best_reward = float(metadata["best_reward"])
+                    try:
+                        resume_episode_offset = max(0, int(metadata.get("episode", 0)))
+                    except (TypeError, ValueError):
+                        resume_episode_offset = 0
+                    print(
+                        f"[DQN] Resume from checkpoint: {candidate} "
+                        f"(last_episode={metadata.get('episode', 'unknown')}, epsilon={self.agent.state.epsilon:.4f})"
+                    )
+                    break
+                except Exception as exc:
+                    print(
+                        f"[DQN] Checkpoint incompatible ({candidate}, {exc.__class__.__name__}); "
+                        "trying next available checkpoint."
+                    )
+            else:
+                print("[DQN] No compatible checkpoint found; starting fresh for this run.")
         elif not self.resume and last_checkpoint.exists():
             print(f"[DQN] Fresh training requested. Ignoring existing checkpoint: {last_checkpoint}")
 
-        with metrics_path.open("w", newline="", encoding="utf-8") as metrics_file:
+        append_metrics = self.resume and metrics_path.exists()
+        with metrics_path.open("a" if append_metrics else "w", newline="", encoding="utf-8") as metrics_file:
             writer = csv.DictWriter(
                 metrics_file,
                 fieldnames=[
@@ -402,9 +499,11 @@ class Trainer:
                     "ceiling_collisions_total",
                 ],
             )
-            writer.writeheader()
+            if not append_metrics:
+                writer.writeheader()
             
             for episode in range(1, self.config.episodes + 1):
+                global_episode = resume_episode_offset + episode
                 state = self.env.reset()
                 episode_reward = 0.0
                 done = False
@@ -413,7 +512,7 @@ class Trainer:
                 episode_pipes_passed = 0
                 self._write_web_feed(
                     training=True,
-                    episode=episode,
+                    episode=global_episode,
                     step=steps,
                     episode_reward=episode_reward,
                     board_filled_count=board_filled_count,
@@ -445,7 +544,7 @@ class Trainer:
                     if steps % max(1, self.config.web_feed_every_n_steps) == 0 or done:
                         self._write_web_feed(
                             training=True,
-                            episode=episode,
+                            episode=global_episode,
                             step=steps,
                             episode_reward=episode_reward,
                             board_filled_count=board_filled_count,
@@ -471,7 +570,7 @@ class Trainer:
                 self.agent.decay_epsilon()
                 writer.writerow(
                     {
-                        "episode": episode,
+                        "episode": global_episode,
                         "steps": steps,
                         "score": int(getattr(getattr(self.env, "_logic_instance", None), "score", 0)),
                         "episode_reward": f"{episode_reward:.4f}",
@@ -492,7 +591,7 @@ class Trainer:
                     self._sync_target_network()
                 if self.config.game == "flappy":
                     print(
-                        f"[{episode:3d}/{self.config.episodes}] "
+                        f"[{episode:3d}/{self.config.episodes} | total {global_episode}] "
                         f"Steps: {steps:6d} | "
                         f"Reason: {end_reason:>18} | "
                         f"Reward: {episode_reward:7.2f} | "
@@ -506,7 +605,7 @@ class Trainer:
                     )
                 else:
                     print(
-                        f"[{episode:3d}/{self.config.episodes}] "
+                        f"[{episode:3d}/{self.config.episodes} | total {global_episode}] "
                         f"Steps: {steps:6d} | "
                         f"Reason: {end_reason:>18} | "
                         f"Reward: {episode_reward:7.2f} | "
@@ -523,10 +622,11 @@ class Trainer:
                         optimizer=self.optimizer,
                         metadata={
                             "game": self.config.game,
-                            "episode": episode,
+                            "episode": global_episode,
                             "episode_reward": episode_reward,
                             "best_reward": best_reward,
                             "epsilon": self.agent.state.epsilon,
+                            "algorithm": "double_dqn" if self.config.double_dqn else "dqn",
                         },
                     )
 
@@ -538,17 +638,25 @@ class Trainer:
                 ):
                     periodic_eval = self._run_greedy_evaluation()
                     self._append_eval_metrics(periodic_eval, last_checkpoint)
+                    previous_best_eval_score = best_eval_score
                     best_eval_score = self._save_best_eval_if_improved(
                         metrics=periodic_eval,
-                        episode=episode,
+                        episode=global_episode,
                         checkpoint_path=best_eval_checkpoint,
                         best_eval_score=best_eval_score,
                     )
-                    self._print_eval_summary(periodic_eval, episode=episode)
+                    if best_eval_score == previous_best_eval_score:
+                        self._restore_best_eval_if_regressed(
+                            metrics=periodic_eval,
+                            best_eval_checkpoint=best_eval_checkpoint,
+                            last_checkpoint=last_checkpoint,
+                            best_eval_score=previous_best_eval_score,
+                        )
+                    self._print_eval_summary(periodic_eval, episode=global_episode)
 
         self._write_web_feed(
             training=False,
-            episode=self.config.episodes,
+            episode=resume_episode_offset + self.config.episodes,
             step=0,
             episode_reward=0.0,
             board_filled_count=board_filled_count,
@@ -574,12 +682,20 @@ class Trainer:
         if self.config.eval_enabled and self.config.eval_episodes > 0:
             eval_metrics = self._run_greedy_evaluation()
             self._append_eval_metrics(eval_metrics, last_checkpoint)
+            previous_best_eval_score = best_eval_score
             best_eval_score = self._save_best_eval_if_improved(
                 metrics=eval_metrics,
-                episode=self.config.episodes,
+                episode=resume_episode_offset + self.config.episodes,
                 checkpoint_path=best_eval_checkpoint,
                 best_eval_score=best_eval_score,
             )
+            if best_eval_score == previous_best_eval_score:
+                self._restore_best_eval_if_regressed(
+                    metrics=eval_metrics,
+                    best_eval_checkpoint=best_eval_checkpoint,
+                    last_checkpoint=last_checkpoint,
+                    best_eval_score=previous_best_eval_score,
+                )
             self._print_eval_summary(eval_metrics)
             print(f"[DQN] Eval metrics logged: {self.logs_dir / 'eval_metrics.csv'}", flush=True)
 
@@ -621,16 +737,13 @@ class Trainer:
 
         current_q_values = self.policy_net(states).gather(1, actions).squeeze(1)
         with torch.no_grad():
-            # Double DQN: choose actions with policy net, evaluate with target net.
-            next_policy_q = self.policy_net(next_states)
-            if self.config.mask_unsafe_actions and self.config.game == "snake":
-                safe_mask_np = next_states_np[:, :3] < 0.5
-                all_blocked = ~safe_mask_np.any(axis=1)
-                safe_mask_np[all_blocked] = True
-                safe_mask = torch.from_numpy(safe_mask_np).to(self.device, non_blocking=True)
-                next_policy_q = next_policy_q.masked_fill(~safe_mask, -1.0e9)
-            next_actions = next_policy_q.argmax(dim=1, keepdim=True)
-            next_q_values = self.target_net(next_states).gather(1, next_actions).squeeze(1)
+            if self.config.double_dqn:
+                # Double DQN: choose the next action with the online policy,
+                # then evaluate that chosen action with the slower target net.
+                next_actions = self._masked_next_policy_q(next_states, next_states_np).argmax(dim=1, keepdim=True)
+                next_q_values = self.target_net(next_states).gather(1, next_actions).squeeze(1)
+            else:
+                next_q_values = self.target_net(next_states).max(dim=1).values
             targets = rewards + self.config.gamma * next_q_values * (1.0 - dones)
 
         td_errors = targets - current_q_values

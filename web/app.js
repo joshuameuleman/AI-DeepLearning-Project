@@ -2,6 +2,9 @@ const BORDER = 1;
 const CELL_PX = 6;
 const MAX_DISPLAY_PX = 768;
 const DEFAULT_WAITING_CELLS = 64;
+const DEFAULT_HUMAN_FPS = 12;
+const MIN_HUMAN_FPS = 1;
+const MAX_HUMAN_FPS = 120;
 
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
@@ -14,6 +17,13 @@ const toggleBtn = document.getElementById("toggle");
 const resetBtn = document.getElementById("reset");
 const speedInput = document.getElementById("speed");
 const gameSelect = document.getElementById("gameSelect");
+const gridSelect = document.getElementById("gridSelect");
+const episodesInput = document.getElementById("episodesInput");
+const simulateBtn = document.getElementById("simulate");
+const trainEpisodesInput = document.getElementById("trainEpisodesInput");
+const profileSelect = document.getElementById("profileSelect");
+const trainBtn = document.getElementById("train");
+const modelStrip = document.getElementById("modelStrip");
 
 const textures = {
   head: loadImage("/Games/Snake/textures/Snake_head.png"),
@@ -31,10 +41,11 @@ const flappyTextures = {
 };
 
 let running = true;
-// Keep network polling at a safe fixed interval; the slider controls only visual smoothing.
+// Keep network polling at a safe fixed interval; the slider controls the simulation FPS.
 const FALLBACK_POLL_MS = 220;
 let pollMs = FALLBACK_POLL_MS;
-let uiSpeed = Number(speedInput.value) > 0 ? Number(speedInput.value) : 30;
+let uiSpeed = Number(speedInput.value) > 0 ? Number(speedInput.value) : DEFAULT_HUMAN_FPS;
+let speedUpdateTimer = null;
 let poller = null;
 let feed = null;
 let displayFeed = null;
@@ -51,6 +62,157 @@ let transitionDurationMs = 120;
 const MAX_INTERPOLATE_HEAD_DISTANCE = 12.0;
 const MAX_INTERPOLATE_STEP_GAP = 14;
 let selectedGame = gameSelect.value || "snake";
+let selectedGridSize = Number(gridSelect.value || 16);
+let modelStatus = [];
+let jobStatus = { running: false, status: "idle", message: "" };
+
+function apiPath(path) {
+  const prefix = window.location.pathname.startsWith("/web/") ? "/api" : "api";
+  return `${prefix}${path}`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function formatMetric(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "-";
+  }
+  return number.toFixed(2);
+}
+
+function selectedModel() {
+  return modelStatus.find((model) => Number(model.gridSize) === Number(selectedGridSize)) || null;
+}
+
+function syncActionButtons() {
+  const model = selectedModel();
+  const isBusy = Boolean(jobStatus && jobStatus.running);
+  simulateBtn.disabled = isBusy || !model || !model.bestEvalExists;
+  trainBtn.disabled = isBusy;
+}
+
+function renderModelStatus() {
+  if (!Array.isArray(modelStatus) || modelStatus.length === 0) {
+    modelStrip.innerHTML = "";
+    syncActionButtons();
+    return;
+  }
+
+  modelStrip.innerHTML = modelStatus.map((model) => {
+    const gridSize = Number(model.gridSize);
+    const active = gridSize === Number(selectedGridSize) ? " active" : "";
+    const bestClass = model.bestEvalExists ? "ok" : "missing";
+    const bestText = model.bestEvalExists ? "best_eval beschikbaar" : "best_eval ontbreekt";
+    const latestText = model.latestExists ? "latest beschikbaar" : "latest ontbreekt";
+    const metric = model.evalMetric ? `${escapeHtml(model.evalMetric)} ${formatMetric(model.evalMetricValue)}` : "nog geen eval metadata";
+    return `
+      <button class="model-card${active}" type="button" data-grid="${gridSize}">
+        <strong>${gridSize}x${gridSize}</strong>
+        <span class="${bestClass}">${bestText}</span>
+        <span>${latestText}</span>
+        <span>${metric}</span>
+      </button>
+    `;
+  }).join("");
+
+  for (const card of modelStrip.querySelectorAll(".model-card")) {
+    card.addEventListener("click", () => {
+      selectedGridSize = Number(card.dataset.grid);
+      gridSelect.value = String(selectedGridSize);
+      renderModelStatus();
+      render();
+    });
+  }
+  syncActionButtons();
+}
+
+async function refreshStatus() {
+  try {
+    const response = await fetch(apiPath("/status"), { cache: "no-store" });
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json();
+    modelStatus = Array.isArray(payload.models) ? payload.models : [];
+    jobStatus = payload.job || jobStatus;
+    renderModelStatus();
+    render();
+  } catch (_) {
+    // The static page can still show SSE feed without API status.
+  }
+}
+
+async function postJson(path, payload) {
+  const response = await fetch(apiPath(path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.error || `Request failed (${response.status})`);
+  }
+  return body;
+}
+
+function clampSpeed(value) {
+  return Math.max(MIN_HUMAN_FPS, Math.min(MAX_HUMAN_FPS, Number(value) || DEFAULT_HUMAN_FPS));
+}
+
+function scheduleSpeedUpdate() {
+  if (speedUpdateTimer !== null) {
+    clearTimeout(speedUpdateTimer);
+  }
+
+  speedUpdateTimer = setTimeout(async () => {
+    speedUpdateTimer = null;
+    try {
+      await postJson("/speed", { fps: uiSpeed });
+      await refreshStatus();
+    } catch (_) {
+      // Static file mode or a stopped server can still render existing feed data.
+    }
+  }, 120);
+}
+
+async function startSimulationFromUi() {
+  const episodes = Math.max(1, Math.min(100, Number(episodesInput.value || 3)));
+  try {
+    hintEl.textContent = `Simulatie wordt gestart voor ${selectedGridSize}x${selectedGridSize}...`;
+    await postJson("/simulate", {
+      gridSize: selectedGridSize,
+      episodes,
+      maxSteps: 0,
+      fps: uiSpeed,
+    });
+    await refreshStatus();
+  } catch (error) {
+    hintEl.textContent = error.message;
+  }
+}
+
+async function startTrainingFromUi() {
+  const episodes = Math.max(1, Math.min(1000000, Number(trainEpisodesInput.value || 10000)));
+  try {
+    hintEl.textContent = `Training wordt gestart voor ${selectedGridSize}x${selectedGridSize}...`;
+    await postJson("/train", {
+      gridSize: selectedGridSize,
+      episodes,
+      profile: profileSelect.value || "balanced",
+      device: "auto",
+    });
+    await refreshStatus();
+  } catch (error) {
+    hintEl.textContent = error.message;
+  }
+}
 
 function syncCanvasSize(gridWidth, gridHeight) {
   const viewCells = Math.max(Number(gridWidth || 10), Number(gridHeight || 10));
@@ -86,9 +248,9 @@ function lerp(a, b, t) {
 
 function computeTransitionDurationMs() {
   // Faster slider setting => shorter interpolation window => visibly snappier movement.
-  const clamped = Math.max(10, Math.min(60, Number(uiSpeed) || 30));
-  const normalized = (clamped - 10) / 50;
-  return Math.round(220 - normalized * 120);
+  const clamped = Math.max(MIN_HUMAN_FPS, Math.min(MAX_HUMAN_FPS, Number(uiSpeed) || DEFAULT_HUMAN_FPS));
+  const normalized = (clamped - MIN_HUMAN_FPS) / (MAX_HUMAN_FPS - MIN_HUMAN_FPS);
+  return Math.round(260 - normalized * 140);
 }
 
 function interpolatePoint(a, b, t) {
@@ -526,7 +688,14 @@ function render() {
 
   if (!visualFeed || (visualFeed.game !== "snake" && visualFeed.game !== "flappy")) {
     metricLabelEl.innerHTML = "Score: <strong id=\"score\">0</strong>";
-    hintEl.textContent = `Geen live ${selectedGame}-feed gevonden. Start ${selectedGame} training/simulatie in main.py.`;
+    const model = selectedModel();
+    const modelText = model && !model.bestEvalExists
+      ? `best_eval.pth ontbreekt voor ${selectedGridSize}x${selectedGridSize}.`
+      : `Kies een grid en druk op Simuleer best_eval.`;
+    const jobText = jobStatus && jobStatus.running
+      ? ` Job: ${jobStatus.kind} ${jobStatus.gridSize}x${jobStatus.gridSize}.`
+      : (jobStatus && jobStatus.message ? ` Laatste job: ${jobStatus.message}.` : "");
+    hintEl.textContent = `${modelText}${jobText}`;
     drawMessage("Wachten op live training...");
     return;
   }
@@ -540,12 +709,16 @@ function render() {
   bestScore = Math.max(bestScore, Number((statsFeed && statsFeed.score) || 0));
   metricLabelEl.innerHTML = `Score: <strong id="score">${Number((statsFeed && statsFeed.score) || 0)}</strong>`;
   highscoreEl.textContent = String(bestScore);
-  const status = statsFeed && statsFeed.training ? "training" : "klaar";
+  const status = statsFeed && statsFeed.training ? "training" : (statsFeed && statsFeed.simulating ? "simulatie" : "klaar");
+  const jobText = jobStatus && jobStatus.running
+    ? ` | Job ${jobStatus.kind} ${jobStatus.gridSize}x${jobStatus.gridSize}`
+    : "";
   if (visualFeed.game === "snake") {
-    hintEl.textContent = `Status ${status} | Episode ${(statsFeed && statsFeed.episode) || 0}/${(statsFeed && statsFeed.totalEpisodes) || 0} | Step ${(statsFeed && statsFeed.step) || 0} | EpReward ${Number((statsFeed && statsFeed.episodeReward) || 0).toFixed(2)} | Epsilon ${Number((statsFeed && statsFeed.epsilon) || 0).toFixed(4)} | BoardFilled ${(statsFeed && statsFeed.boardFilledCount) || 0} | Wall ${(statsFeed && statsFeed.wallCollisionCount) || 0} | Self ${(statsFeed && statsFeed.selfCollisionCount) || 0} | Fruits ${Number((statsFeed && statsFeed.foodCount) || 0)}/${Number((statsFeed && statsFeed.targetFoodCount) || 0)} | Grid ${(statsFeed && statsFeed.gridWidth) || 10}x${(statsFeed && statsFeed.gridHeight) || 10} | ViewSpeed ${uiSpeed}`;
+    hintEl.textContent = `Status ${status} | Episode ${(statsFeed && statsFeed.episode) || 0}/${(statsFeed && statsFeed.totalEpisodes) || 0} | Step ${(statsFeed && statsFeed.step) || 0} | EpReward ${Number((statsFeed && statsFeed.episodeReward) || 0).toFixed(2)} | Epsilon ${Number((statsFeed && statsFeed.epsilon) || 0).toFixed(4)} | BoardFilled ${(statsFeed && statsFeed.boardFilledCount) || 0} | Wall ${(statsFeed && statsFeed.wallCollisionCount) || 0} | Self ${(statsFeed && statsFeed.selfCollisionCount) || 0} | Fruits ${Number((statsFeed && statsFeed.foodCount) || 0)}/${Number((statsFeed && statsFeed.targetFoodCount) || 0)} | Grid ${(statsFeed && statsFeed.gridWidth) || 10}x${(statsFeed && statsFeed.gridHeight) || 10} | FPS ${uiSpeed}${jobText}`;
   } else {
-    hintEl.textContent = `Status ${status} | Episode ${(statsFeed && statsFeed.episode) || 0}/${(statsFeed && statsFeed.totalEpisodes) || 0} | Step ${(statsFeed && statsFeed.step) || 0} | EpReward ${Number((statsFeed && statsFeed.episodeReward) || 0).toFixed(2)} | Epsilon ${Number((statsFeed && statsFeed.epsilon) || 0).toFixed(4)} | Pipes ${Array.isArray((statsFeed && statsFeed.pipes)) ? statsFeed.pipes.length : 0} | BirdY ${Number((statsFeed && statsFeed.bird && statsFeed.bird.y) || 0).toFixed(1)} | ViewSpeed ${uiSpeed}`;
+    hintEl.textContent = `Status ${status} | Episode ${(statsFeed && statsFeed.episode) || 0}/${(statsFeed && statsFeed.totalEpisodes) || 0} | Step ${(statsFeed && statsFeed.step) || 0} | EpReward ${Number((statsFeed && statsFeed.episodeReward) || 0).toFixed(2)} | Epsilon ${Number((statsFeed && statsFeed.epsilon) || 0).toFixed(4)} | Pipes ${Array.isArray((statsFeed && statsFeed.pipes)) ? statsFeed.pipes.length : 0} | BirdY ${Number((statsFeed && statsFeed.bird && statsFeed.bird.y) || 0).toFixed(1)} | FPS ${uiSpeed}${jobText}`;
   }
+  syncActionButtons();
 }
 
 function restartPolling() {
@@ -579,10 +752,10 @@ resetBtn.addEventListener("click", () => {
 });
 
 speedInput.addEventListener("input", (e) => {
-  const value = Number(e.target.value);
-  uiSpeed = value > 0 ? value : 30;
+  uiSpeed = clampSpeed(e.target.value);
   pollMs = FALLBACK_POLL_MS;
   transitionDurationMs = computeTransitionDurationMs();
+  scheduleSpeedUpdate();
   if (!eventSource) {
     restartPolling();
   }
@@ -594,6 +767,18 @@ gameSelect.addEventListener("change", () => {
   render();
 });
 
+gridSelect.addEventListener("change", () => {
+  selectedGridSize = Number(gridSelect.value);
+  renderModelStatus();
+  render();
+});
+
+simulateBtn.addEventListener("click", startSimulationFromUi);
+trainBtn.addEventListener("click", startTrainingFromUi);
+
 gameSelect.value = selectedGame;
+gridSelect.value = String(selectedGridSize);
 render();
+refreshStatus();
+setInterval(refreshStatus, 5000);
 startEventStream();

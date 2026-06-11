@@ -383,7 +383,8 @@ class SnakeLogic:
         # Self collision
         elif new_head in self._body_set and (will_eat or new_head != prev_tail):
             done = True
-            reward = -80.0
+            # Stronger penalty to discourage self-collisions observed in training metrics.
+            reward = -120.0
             info["reason"] = "self_collision"
         else:
             # Valid move
@@ -424,7 +425,8 @@ class SnakeLogic:
                 if removed_tail != new_head:
                     self._body_set.discard(removed_tail)
                 # Small time penalty encourages efficient food-seeking.
-                reward = -0.01
+                # Increase to discourage long aimless loops (helps reduce self-collisions).
+                reward = -0.05
                 if has_food:
                     next_nearest = self._nearest_food(new_head)
                     if next_nearest is not None:
@@ -441,7 +443,7 @@ class SnakeLogic:
 
                         # Penalize repeated non-progress loops around food (circle behavior).
                         if self.food_progress_stall_steps >= 5:
-                            orbit_penalty = min(1.5, 0.08 * (self.food_progress_stall_steps - 4))
+                            orbit_penalty = min(2.0, 0.12 * (self.food_progress_stall_steps - 4))
                             reward -= orbit_penalty
                             info["orbit_penalty"] = round(orbit_penalty, 3)
                         if self.food_progress_stall_steps >= 20:
@@ -453,6 +455,9 @@ class SnakeLogic:
                     self.food_progress_stall_steps = 0
                 safe_moves = self._safe_move_count(new_head, self.body)
                 reward += self._safety_adjustment(safe_moves)
+                # Penalize moving into positions with very few safe moves (dead-ends).
+                if safe_moves <= 1:
+                    reward -= 1.0
 
                 # Penalize local loops: revisiting the same head positions repeatedly
                 # without eating often indicates circling around food/body traps.

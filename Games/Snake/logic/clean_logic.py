@@ -40,21 +40,21 @@ class SnakeLogic:
     ACTION_TURN_RIGHT = 1
     ACTION_TURN_LEFT = 2
 
-    FOOD_REWARD = 10.0
+    FOOD_REWARD = 12.0
     WALL_COLLISION_REWARD = -10.0
-    SELF_COLLISION_REWARD = -20.0
+    SELF_COLLISION_REWARD = -30.0
     STEP_REWARD = -0.01
-    TOWARD_FOOD_REWARD = 0.10
-    AWAY_FROM_FOOD_REWARD = -0.05
+    TOWARD_FOOD_REWARD = 0.14
+    AWAY_FROM_FOOD_REWARD = -0.08
     CYCLE_FOLLOW_REWARD = 0.0
     CYCLE_LEAVE_REWARD = 0.0
-    OPEN_SPACE_REWARD = 0.08
-    LOW_SPACE_REWARD = -0.45
-    TAIL_ACCESS_REWARD = 0.05
-    TAIL_BLOCKED_REWARD = -0.35
-    TRAP_REWARD = -0.70
-    BOARD_FILLED_REWARD = 100.0
-    STAGNATION_REWARD = -10.0
+    OPEN_SPACE_REWARD = 0.18
+    LOW_SPACE_REWARD = -0.50
+    TAIL_ACCESS_REWARD = 0.08
+    TAIL_BLOCKED_REWARD = -0.50
+    TRAP_REWARD = -0.90
+    BOARD_FILLED_REWARD = 300.0
+    STAGNATION_REWARD = -8.0
 
     _DIR_VECTORS: Tuple[Point, ...] = (
         (1, 0),
@@ -68,7 +68,7 @@ class SnakeLogic:
         self.GRID_WIDTH = resolved_grid_size
         self.GRID_HEIGHT = resolved_grid_size
         self.rng = rng or random.Random()
-        self.max_stagnation_steps = max(100, self.GRID_WIDTH * self.GRID_HEIGHT * 2)
+        self.max_stagnation_steps = max(100, self.GRID_WIDTH * self.GRID_HEIGHT * 6)
 
         self.body: List[Point] = []
         self.foods: List[Point] = []

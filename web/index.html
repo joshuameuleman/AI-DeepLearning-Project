@@ -16,6 +16,33 @@
       </div>
     </header>
 
+    <section class="toolbar" aria-label="Snake DQN bediening">
+      <div class="field">
+        <label for="gridSelect">Grid</label>
+        <select id="gridSelect">
+          <option value="16">16x16</option>
+          <option value="32">32x32</option>
+          <option value="64">64x64</option>
+          <option value="128">128x128</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="episodesInput">Episodes</label>
+        <input id="episodesInput" type="number" min="1" max="100" value="3" />
+      </div>
+      <button id="simulate" type="button">Simuleer best_eval</button>
+      <div class="field">
+        <label for="trainEpisodesInput">Training</label>
+        <input id="trainEpisodesInput" type="number" min="1" max="1000000" value="10000" />
+      </div>
+      <select id="profileSelect" aria-label="Trainingprofiel">
+        <option value="fast">Fast</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="quality">Quality</option>
+      </select>
+      <button id="train" type="button">Train grid</button>
+    </section>
+
     <section class="panel">
       <canvas id="game" width="64" height="64" aria-label="Game canvas"></canvas>
 
@@ -28,11 +55,13 @@
         <button id="toggle" type="button">Pauze</button>
         <button id="reset" type="button">Reset</button>
         <label for="speed">Snelheid</label>
-        <input id="speed" type="range" min="10" max="60" value="30" />
+        <input id="speed" type="range" min="1" max="120" value="12" />
       </div>
 
       <p class="hint" id="hint">Live game viewer. Geen fallback: de pagina toont alleen echte feed-data.</p>
     </section>
+
+    <section class="model-strip" id="modelStrip" aria-label="Beschikbare Snake modellen"></section>
   </main>
 
   <script src="app.js"></script>
