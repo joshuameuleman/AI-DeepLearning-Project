@@ -121,6 +121,124 @@ matplotlib==3.8.4
 
 Gebruik je geen NVIDIA GPU of geen CUDA 12.1-compatible omgeving, pas dan de PyTorch-installatie aan via de officiële PyTorch wheel-keuze.
 
+## VM Setup (Stap-voor-Stap)
+
+Dit is hoe je het project in één keer op een schone VM installeert en start.
+
+### 1. Project Klonen
+
+```bash
+cd ~
+git clone https://github.com/joshuameuleman/AI-DeepLearning-Project.git
+cd AI-DeepLearning-Project
+```
+
+### 2. Python-Vereisten Controleren
+
+Het project vereist **Python 3.10 of 3.11**. Controleer je versie:
+
+```bash
+python3 --version
+```
+
+Als Python niet beschikbaar is of je hebt een ander versienummer, installeer Python 3.11:
+
+**Op Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install python3.11 python3.11-venv python3-pip
+```
+
+**Op CentOS/RHEL:**
+```bash
+sudo yum install python3.11 python3.11-devel
+```
+
+### 3. Virtual Environment Aanmaken en Activeren
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Na activatie zie je `(.venv)` in je terminal.
+
+### 4. Dependencies Installeren
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+**Opmerking:** De `requirements.txt` bevat PyTorch met CUDA 12.1 support. 
+- Heb je **geen NVIDIA GPU**, dan werkt dit ook; training is dan alleen langzamer.
+- Heb je een **ander GPU-model of CUDA-versie**, pas dan de PyTorch-regel in `requirements.txt` aan via https://pytorch.org/get-started/locally/
+
+### 5. Installatie Verifiëren
+
+```bash
+python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+python -c "import pygame; print('Pygame: OK')"
+python -c "import numpy; print('NumPy: OK')"
+```
+
+Als alles groen wordt, ben je klaar!
+
+### 6. Project Starten
+
+**Optie A: Interactieve Launcher (aanbevolen voor eerste keer)**
+```bash
+python main.py
+```
+
+Kies dan een optie:
+- `1. play` → Speel Snake handmatig
+- `2. train` → Train een nieuw DQN-model
+- `3. simulate` → Draai een bestaand model
+- `4. visualize` → Visualiseer met pygame
+
+**Optie B: Web-Interface (voor live meekijken)**
+```bash
+python serve_web.py --host 0.0.0.0 --port 8000
+```
+
+Open daarna je browser op: `http://127.0.0.1:8000/web/`
+
+**Optie C: Direct Trainen (als je in de voorkeur weet wat je wilt)**
+```bash
+python DQN/train.py --game snake --grid-size 32 --episodes 5000 --profile balanced --device auto
+```
+
+### 7. Output en Checkpoints
+
+Na training/simulatie staan alle resultaten hier:
+
+```text
+DQN/checkpoints/snake_32x32/latest.pth      # Meest recente model
+DQN/checkpoints/snake_32x32/best_eval.pth   # Beste evaluatieprestatie
+DQN/logs/snake_32x32/metrics.csv             # Trainingsstatistieken
+DQN/logs/snake_32x32/eval_metrics.csv        # Evaluatiestatistieken
+```
+
+### Veelvoorkomende Problemen
+
+**PyTorch CUDA niet beschikbaar**
+```bash
+python DQN/train.py --game snake --device cpu
+```
+
+**Port 8000 al in gebruik**
+```bash
+python serve_web.py --port 8001
+```
+
+**Virtual environment vergeten activeren?**
+```bash
+source .venv/bin/activate  # Linux/Mac
+# of op Windows:
+.venv\Scripts\activate
+```
+
 ## Installatie
 
 Maak eerst een virtual environment aan:
@@ -531,6 +649,28 @@ python -c "import torch; print(torch.cuda.is_available())"
 ```
 
 Als dit `False` is, gebruik `--device cpu` of installeer een PyTorch-build die past bij je CUDA/NVIDIA-driver.
+
+## Gegenereerde Bestanden vs. Repository-Code
+
+**In de GitHub-repository (statisch, clonen volstaat):**
+- Game-logica: `Games/Snake/logic/`, `Games/Flappy Bird/logic/`, etc.
+- DQN-training & inferentie: `DQN/src/agents/`, `DQN/src/models/`, etc.
+- Web-interface: `web/index.html`, `web/app.js`, `web/styles.css`
+- Launcher & CLI: `main.py`, `DQN/train.py`, `DQN/simulate.py`
+- Configuratie: `requirements.txt`, `.env-example`
+
+**Gegenereerd na training/simulatie (lokaal, niet in GitHub):**
+- Modellen: `DQN/checkpoints/<game>/latest.pth`, `best_eval.pth`
+- Trainingsdata: `DQN/logs/<game>/metrics.csv`, `eval_metrics.csv`
+- Runtime: `web/live_state.json` (live-feed output)
+
+Als je het project clont, hebben `DQN/checkpoints/` en `DQN/logs/` vooraf ingevulde bestanden uit vorige trainingsruns. Deze kan je verwijderen met:
+
+```bash
+rm -rf DQN/checkpoints/* DQN/logs/*
+```
+
+Dan beginnen nieuwe trainingsruns helemaal opnieuw. De code zal automatisch nieuwe logmappen aanmaken.
 
 ## Aanbevolen Workflow
 
