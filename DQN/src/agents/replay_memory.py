@@ -25,7 +25,7 @@ class _SumTree:
 
     def total(self) -> float:
         return self.tree[1]
-
+    # Update the priority of a data index and propagate the change up the tree.
     def update(self, data_idx: int, priority: float) -> None:
         if data_idx < 0 or data_idx >= self.capacity:
             return
@@ -38,7 +38,7 @@ class _SumTree:
         while tree_idx >= 1:
             self.tree[tree_idx] += change
             tree_idx //= 2
-
+    # Get the data index and priority for a given prefix-sum value in [0, total).
     def get(self, value: float) -> tuple[int, float]:
         """Return (data_idx, priority) for a prefix-sum query value in [0, total]."""
         idx = 1
@@ -85,7 +85,7 @@ class ReplayMemory:
         self._sample_calls = 0
         self._max_priority = 1.0
         self._sum_tree = _SumTree(capacity) if prioritized else None
-
+    # Add a new transition to the replay memory, overwriting the oldest if at capacity.
     def push(self, transition: Transition) -> None:
         insert_idx = self._position
         if len(self._buffer) < self.capacity:
@@ -99,11 +99,11 @@ class ReplayMemory:
             self._sum_tree.update(insert_idx, scaled)
 
         self._position = (self._position + 1) % self.capacity
-
+    # Compute the current beta value for importance-sampling weights based on the number of sample calls.
     def _current_beta(self) -> float:
         fraction = min(1.0, self._sample_calls / float(self.beta_frames))
         return self.beta_start + fraction * (1.0 - self.beta_start)
-
+    # Sample a batch of transitions, returning the transitions, their indices, and importance-sampling weights.
     def sample(self, batch_size: int) -> tuple[List[Transition], List[int], List[float]]:
         if batch_size > len(self._buffer):
             raise ValueError("Not enough samples in replay memory")
@@ -143,7 +143,7 @@ class ReplayMemory:
 
         transitions = [self._buffer[idx] for idx in indices]
         return transitions, indices, weights
-
+    # Update the priorities of the given indices based on their TD errors.
     def update_priorities(self, indices: Sequence[int], td_errors: Sequence[float]) -> None:
         if not self.prioritized:
             return

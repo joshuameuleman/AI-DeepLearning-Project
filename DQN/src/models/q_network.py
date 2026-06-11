@@ -38,7 +38,7 @@ class QNetwork(nn.Module):
             nn.Linear(hidden_size, output_size),
         )
         self.use_legacy_net = False
-
+    # Forward pass berekent Q-waarden voor alle acties gegeven een staat. In Dueling DQN worden waarde en voordeel gecombineerd.
     def forward(self, x):
         if self.use_legacy_net:
             return self.net(x)

@@ -66,13 +66,14 @@ class Trainer:
                 torch.set_float32_matmul_precision("high")
             except Exception:
                 pass
-
+        # Seed can be set here if deterministic behavior is desired, but note that this may reduce performance.
         self.env = GameEnvironment(config.game, allow_fallback=False)
         self.agent = DQNAgent(
             epsilon_start=config.epsilon_start,
             epsilon_end=config.epsilon_end,
             epsilon_decay=config.epsilon_decay,
         )
+        # Replay memory with optional prioritized experience replay based on config.
         self.memory = ReplayMemory(
             config.memory_size,
             prioritized=config.prioritized_replay,
@@ -81,17 +82,18 @@ class Trainer:
             beta_frames=config.per_beta_frames,
             priority_epsilon=config.per_priority_epsilon,
         )
+        # Q-networks: policy_net is updated every learning step; target_net is updated less frequently for stability.
         self.policy_net = QNetwork(self.env.metadata.state_size, config.hidden_size, len(self.env.action_space())).to(self.device)
         self.target_net = QNetwork(self.env.metadata.state_size, config.hidden_size, len(self.env.action_space())).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=config.learning_rate)
-
+    # Custom method to move optimizer state tensors to the correct device after loading a checkpoint.
     def _move_optimizer_state_to_device(self) -> None:
         for state in self.optimizer.state.values():
             for key, value in state.items():
                 if torch.is_tensor(value):
                     state[key] = value.to(self.device)
-
+    # Custom method to write training progress and metrics to the live web feed if enabled.
     def _write_web_feed(
         self,
         *,
@@ -137,7 +139,7 @@ class Trainer:
         if payload is None:
             return
         publish_state(payload)
-
+    # Synchronize the target network with the policy network. Supports both hard and soft (Polyak) updates based on config.
     def _sync_target_network(self) -> None:
         # Support soft (Polyak) updates for stability when enabled in config.
         if getattr(self.config, "use_polyak_target", False):
@@ -147,7 +149,7 @@ class Trainer:
                 target_param.data.add_(policy_param.data * tau)
         else:
             self.target_net.load_state_dict(self.policy_net.state_dict())
-
+    # Custom method to compute an action mask for unsafe actions based on the current state, used for games like Snake if enabled in config.
     def _action_mask_from_state(self, state: Any) -> list[bool] | None:
         if not self.config.mask_unsafe_actions or self.config.game != "snake":
             return None
@@ -155,7 +157,7 @@ class Trainer:
             return [float(state[index]) < 0.5 for index in range(3)]
         except (TypeError, ValueError, IndexError):
             return None
-
+    # Compute the masked next policy Q-values for a batch of next states, applying action masking if enabled in config.
     def _masked_next_policy_q(self, next_states: torch.Tensor, next_states_np: np.ndarray) -> torch.Tensor:
         next_policy_q = self.policy_net(next_states)
         if self.config.mask_unsafe_actions and self.config.game == "snake":
@@ -165,7 +167,7 @@ class Trainer:
             safe_mask = torch.from_numpy(safe_mask_np).to(self.device, non_blocking=True)
             next_policy_q = next_policy_q.masked_fill(~safe_mask, -1.0e9)
         return next_policy_q
-
+    # Perform a learning step if enough samples are available in the replay memory, including computing targets, loss, backpropagation, and priority updates if using prioritized replay.
     def _run_greedy_evaluation(self) -> Dict[str, float]:
         eval_env = GameEnvironment(self.config.game, allow_fallback=False)
         old_epsilon = float(self.agent.state.epsilon)
