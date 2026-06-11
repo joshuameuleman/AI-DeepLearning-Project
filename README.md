@@ -22,6 +22,7 @@ De huidige games zijn:
 - [Snake handmatig spelen](#snake-handmatig-spelen)
 - [Checkpoints en logs](#checkpoints-en-logs)
 - [Hoe de DQN-pipeline werkt](#hoe-de-dqn-pipeline-werkt)
+- [DQN-Architectuur in Detail](#dqn-architectuur-in-detail)
 - [DQN-variabelen uitgelegd](#dqn-variabelen-uitgelegd)
 - [Game-logica](#game-logica)
 - [Configuratie](#configuratie)
@@ -528,6 +529,254 @@ De training gebruikt onder andere:
 
 De kernconfiguratie staat in `DQN/src/training/config.py`. Game-specifieke tuning gebeurt vooral in `DQN/train.py`.
 
+## DQN-Architectuur in Detail
+
+Dit gedeelte legt uit hoe de DQN-trainingsloop precies werkt. Zorg dat je dit begrijpt voordat je voor je docent staat!
+
+### Overall Training Flow
+
+De trainingsloop (`DQN/src/training/trainer.py`) werkt als volgt:
+
+```
+1. Laad checkpoint (best_eval of latest) of start opnieuw
+2. Per episode:
+   a. Reset omgeving → krijg begintoestand
+   b. Per stap in episode:
+      - Agent kiest actie (epsilon-greedy)
+      - Voer actie uit → krijg reward, next_state, done
+      - Sla (state, action, reward, next_state, done) op in replay memory
+      - Learn: sample batch uit replay memory en update Q-netwerk
+   c. Na episode: update target network (elke N episodes)
+3. Elke M episodes: run evaluatie met epsilon=0.0 (geen exploratie)
+4. Controleer of evaluatieprestatie beter is, zo ja: sla best_eval.pth op
+5. Herhal tot max episodes bereikt
+```
+
+### Core Components
+
+**1. GameEnvironment** (`DQN/src/envs/game_env.py`)
+- Laadt game-logica dynamisch uit `Games/<game>/logic/game_logic.py`
+- Voert een uniforme interface uit voor alle games:
+  ```python
+  state = env.reset()
+  outcome = env.step(action)  # → state, reward, done, info
+  actions = env.action_space()
+  ```
+- Abstraheert game-specifieke details weg (Snake vs Flappy Bird vs 2048)
+
+**2. QNetwork** (`DQN/src/models/q_network.py`)
+- Eenvoudig 3-layer neural network:
+  ```
+  Input (state_size)
+      ↓
+  Linear(state_size → hidden_size) + ReLU
+      ↓
+  Linear(hidden_size → hidden_size) + ReLU
+      ↓
+  Linear(hidden_size → action_count)
+      ↓
+  Output (Q-value per actie)
+  ```
+- **Policy Net**: Huidige netwerk dat acties voorstelt
+- **Target Net**: Kopie die minder vaak update, voor stabiliteit
+- Beide worden op GPU/CPU geplaatst via `config.device`
+
+**3. DQNAgent** (`DQN/src/agents/dqn_agent.py`)
+- Beheren epsilon-greedy exploration:
+  ```python
+  if random() < epsilon:
+      action = random_choice(action_space)
+  else:
+      action = argmax(policy_net.forward(state))
+  ```
+- `epsilon` start hoog (veel verkenning) en daalt naar `epsilon_end`
+- Decay formule: `epsilon = max(epsilon_end, epsilon_start * decay^(step))`
+
+**4. ReplayMemory** (`DQN/src/agents/replay_memory.py`)
+- Slaat ervaringen `(state, action, reward, next_state, done)` op
+- Maximale grootte: `memory_size` (meestal 10k - 100k)
+- Bij volheid: verwijder oudste ervaringen (FIFO)
+- **Prioritized Replay**: Sample vaker ervaringen met hoge TD-error
+  - TD-error = `|target_value - predicted_value|`
+  - Belangrijke ervaringen = grote leerwaarde
+
+**5. Trainer Loop** (`DQN/src/training/trainer.py`)
+
+Per stap gebeurt:
+
+```python
+# 1. Selecteer actie
+action = agent.select_action(state, policy_net, device)
+
+# 2. Voer actie uit
+outcome = env.step(action)
+state, reward, done, info = outcome
+
+# 3. Sla ervaringen op
+memory.push(state, action, reward, next_state, done)
+
+# 4. Learn (elke learn_every_n_steps)
+if total_steps % learn_every_n_steps == 0:
+    batch = memory.sample(batch_size)  # ← Prioritized replay hier
+    
+    # Double DQN update:
+    # 1. Policy net kiest beste actie op next_state
+    next_actions = policy_net(next_states).argmax(dim=1)
+    
+    # 2. Target net evalueert die acties
+    target_values = target_net(next_states).gather(1, next_actions)
+    
+    # 3. Berekenen target: reward + gamma * target_value (als niet done)
+    target = reward + gamma * target_values * (1 - done)
+    
+    # 4. Voorspellen huidge Q-waarden
+    predicted = policy_net(states).gather(1, actions)
+    
+    # 5. MSE loss en backprop
+    loss = (predicted - target).pow(2).mean()
+    optimizer.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(policy_net, 1.0)  # Clip grads
+    optimizer.step()
+    
+    # Update priorities in replay memory
+    memory.update_priorities(td_errors)
+
+# 5. Update target network (elke target_update_every_episodes)
+if episode % target_update_every_episodes == 0:
+    target_net.load_state_dict(policy_net.state_dict())
+```
+
+### Double DQN Uitleg
+
+Normaal DQN heeft een probleem: het **overschat** Q-values omdat:
+
+```
+Normale DQN:
+  best_action = argmax(Q(s_next))  ← Policy net kiest
+  target = r + gamma * max(Q(s_next))  ← Target net evalueert hetzelfde
+
+Dit leidt tot optimistische schattingen!
+```
+
+**Double DQN** (wat wij gebruiken):
+
+```
+Double DQN:
+  best_action = argmax(policy_net(s_next))  ← Policy net kiest
+  target = r + gamma * target_net(s_next)[best_action]  ← Target net evalueert
+
+Dit is realistischer omdat twee netwerken deelnemen.
+```
+
+Zie `_masked_next_policy_q()` in [DQN/src/training/trainer.py](DQN/src/training/trainer.py) voor implementatie.
+
+### Prioritized Replay
+
+Normaal sample je willekeurig uit replay memory. Maar sommige ervaringen zijn belangrijker dan anderen!
+
+**TD-Error** (Temporal Difference Error):
+```
+TD-error = |target_Q - predicted_Q|
+  - Hoog = veel geleerd
+  - Laag = already fits well (minder nuttig)
+```
+
+**Prioritized Replay**:
+- Compute TD-error na elke update
+- Slaa TD-errors op samen met experiences
+- Sample `high_TD_error` experiences vaker
+- Dit versnelt leren omdat je focust op "moeilijke" cases
+
+Implementatie in [DQN/src/agents/replay_memory.py](DQN/src/agents/replay_memory.py) met `PrioritizedReplayMemory` klasse.
+
+### Action Masking voor Snake
+
+Snake heeft vaak situaties waar bepaalde acties **onveilig** zijn:
+- Je bent naar rechts aan het gaan → je kunt niet onmiddellijk naar links
+- Je raakt jezelf!
+
+**Hoe masking werkt**:
+
+```python
+# Extraheer eerste 3 state-waarden (collision detection)
+is_wall_left = state[0] > 0.5
+is_wall_straight = state[1] > 0.5
+is_wall_right = state[2] > 0.5
+
+safe_actions = [not is_wall_left, not is_wall_straight, not is_wall_right]
+
+# Mask onveilige acties
+Q_values = policy_net(state)
+Q_values[~safe_actions] = -1e9  # Maak onveilige acties zeer negatief
+
+action = argmax(Q_values)  # Kiest nu enkel veilige acties
+```
+
+Dit voorkomt dat de agent veel tijd verspilt met botsingen en verbetert leren.
+
+Zie `_action_mask_from_state()` en `_masked_next_policy_q()` in [DQN/src/training/trainer.py](DQN/src/training/trainer.py).
+
+### Checkpointing & Evaluation
+
+De trainer slaat regelmatig modellen op:
+
+```
+DQN/checkpoints/<run_name>/
+  ├── latest.pth          ← Meest recent (elke episode)
+  └── best_eval.pth       ← Beste evaluatieprestatie
+```
+
+**Evaluatie** (elke `eval_every_episodes`):
+- Draai `eval_episodes` met epsilon=0.0 (geen exploratie)
+- Meet: gemiddelde reward, score, aantal stappen, type eindresultaat
+- Als avg_score/avg_steps/avg_reward beter is dan vorige beste:
+  - Sla beste model op als `best_eval.pth`
+  - Log alles naar `eval_metrics.csv`
+
+Dit zorgt dat je altijd het beste model hebt, niet alleen het meest recente.
+
+### Training Configuration
+
+Alle hyperparameters staan in [DQN/src/training/config.py](DQN/src/training/config.py) en kunnen via CLI gekozen worden:
+
+```bash
+python DQN/train.py \
+  --game snake \
+  --grid-size 32 \
+  --episodes 10000 \
+  --profile balanced \
+  --device auto
+```
+
+Game-specifieke defaults staan in [DQN/train.py](DQN/train.py):
+- Snake `fast`: lage hidden_size, korte episodes (snel testen)
+- Snake `balanced`: gemiddelde instellingen (standaard)
+- Snake `quality`: hogere hidden_size, langere training (betere resultaten)
+
+### Debugging Tips
+
+Voor je docent:
+
+1. **Kijk in logs**:
+   ```bash
+   head -n 20 DQN/logs/snake_32x32/metrics.csv
+   head -n 20 DQN/logs/snake_32x32/eval_metrics.csv
+   ```
+   Je ziet: episode rewards, epsilon decay, evaluatieprestatie
+
+2. **Check checkpoint grootte**:
+   ```bash
+   ls -lh DQN/checkpoints/snake_32x32/
+   ```
+   ~1-2 MB is normaal (alleen network weights, geen optimizer state)
+
+3. **Train een korte run**:
+   ```bash
+   python DQN/train.py --game snake --episodes 100 --profile fast
+   ```
+   Zie je rewards stijgen? Dan werkt het systeem!
+
 ## DQN-Variabelen Uitgelegd
 
 Deze termen kom je vaak tegen in de code en trainingsoutput.
@@ -649,28 +898,6 @@ python -c "import torch; print(torch.cuda.is_available())"
 ```
 
 Als dit `False` is, gebruik `--device cpu` of installeer een PyTorch-build die past bij je CUDA/NVIDIA-driver.
-
-## Gegenereerde Bestanden vs. Repository-Code
-
-**In de GitHub-repository (statisch, clonen volstaat):**
-- Game-logica: `Games/Snake/logic/`, `Games/Flappy Bird/logic/`, etc.
-- DQN-training & inferentie: `DQN/src/agents/`, `DQN/src/models/`, etc.
-- Web-interface: `web/index.html`, `web/app.js`, `web/styles.css`
-- Launcher & CLI: `main.py`, `DQN/train.py`, `DQN/simulate.py`
-- Configuratie: `requirements.txt`, `.env-example`
-
-**Gegenereerd na training/simulatie (lokaal, niet in GitHub):**
-- Modellen: `DQN/checkpoints/<game>/latest.pth`, `best_eval.pth`
-- Trainingsdata: `DQN/logs/<game>/metrics.csv`, `eval_metrics.csv`
-- Runtime: `web/live_state.json` (live-feed output)
-
-Als je het project clont, hebben `DQN/checkpoints/` en `DQN/logs/` vooraf ingevulde bestanden uit vorige trainingsruns. Deze kan je verwijderen met:
-
-```bash
-rm -rf DQN/checkpoints/* DQN/logs/*
-```
-
-Dan beginnen nieuwe trainingsruns helemaal opnieuw. De code zal automatisch nieuwe logmappen aanmaken.
 
 ## Aanbevolen Workflow
 
